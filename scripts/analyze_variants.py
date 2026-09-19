@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy.stats import binomtest
 from sklearn.metrics import roc_auc_score
 
 from jev_calibration import metrics, plots_variants as pv
@@ -88,6 +89,19 @@ for view, sub in (("all", test), ("no_neutral", test[test.strength != "neutral"]
     results[f"coverage_{view}"] = {v: {f"cov@acc>={t}": (float(c[c.accuracy >= t].coverage.max()) if (c.accuracy >= t).any() else 0.0)
                                         for t in (0.9, 0.95, 0.99)} for v, c in curves.items()}
 
+# accuracy depends on the wording AND on the decision cutoff: compare at 0.5 and at a cutoff tuned on the calibration split
+acc_at = lambda d, v, t=.5: float(((d[v] >= t).astype(int) == d.y).mean())
+ts = np.linspace(.05, .95, 91)
+for v in VARS:
+    best = float(ts[np.argmax([acc_at(cal, v, t) for t in ts])])
+    results["variants"][v]["tuned_cutoff"] = {"cutoff": best, "test_accuracy": acc_at(test, v, best)}
+results["mcnemar_vs_choice2"] = {}
+for v in ("noul_pos", "noul_neg", "noul_favorable"):
+    a = ((test[v] >= .5) == test.y).values; b = ((test.choice2 >= .5) == test.y).values
+    n_a, n_b = int((a & ~b).sum()), int((~a & b).sum())
+    results["mcnemar_vs_choice2"][v] = {"only_this_right": n_a, "only_choice2_right": n_b, "p": float(binomtest(n_a, n_a + n_b, .5).pvalue)}
+results["mean_p_pos"] = {v: float(test[v].mean()) for v in VARS}; results["positive_rate"] = float(test.y.mean())
+
 Path("results/variants.json").write_text(json.dumps(results, indent=2))
 pd.set_option("display.width", 200)
 summ = pd.DataFrame({"acc@.5": {v: results["variants"][v]["accuracy_at_0.5"] for v in VARS},
@@ -99,3 +113,7 @@ print(summ.round(3).to_string())
 
 for view in ("all", "no_neutral"):
     print(view, "coverage at accuracy target:"); print(pd.DataFrame(results[f"coverage_{view}"]).T.round(3).to_string())
+
+print("\naccuracy @0.5 -> tuned cutoff:")
+for v in VARS: print(f"  {v:18s} {results['variants'][v]['accuracy_at_0.5']:.3f} -> {results['variants'][v]['tuned_cutoff']['test_accuracy']:.3f} (cutoff {results['variants'][v]['tuned_cutoff']['cutoff']:.2f})")
+print(json.dumps(results["mcnemar_vs_choice2"], indent=1))

@@ -115,6 +115,25 @@ What we found:
 
 ![Accuracy by tier](images/variants/accuracy_by_strength.png)
 
+### Accuracy depends on the setup, and on the cutoff
+
+The same classification, asked differently, gets a different accuracy at the default 0.5 cutoff (test split, 3,521 examples):
+
+| Setup | Accuracy @ 0.5 | Weak-tier accuracy | Accuracy with a tuned cutoff |
+|---|---|---|---|
+| `noul_pos` ("is it positive?") | 0.723 | 0.668 | 0.787 |
+| `noul_neg` ("is it negative?") | 0.751 | 0.725 | 0.756 |
+| `noul_favorable` (different wording) | 0.761 | 0.739 | 0.788 |
+| `choice2` | 0.760 | 0.741 | 0.778 |
+| `choice3` | 0.764 | 0.748 | 0.784 |
+| `score5` | 0.768 | 0.756 | 0.781 |
+
+- **It isn't a Noul-versus-Choice difference.** `noul_pos` is significantly worse than `choice2` (paired exact McNemar test, p = 6×10⁻⁶), but `noul_favorable` ties it (0.761 vs 0.760, p = 0.95) and `noul_neg` isn't significantly different (p = 0.14). The spread across three Noul wordings is as large as the gap between Noul and Choice.
+- **The differences are all in the weak tier.** Strong (1.000), medium (about 0.997) and neutral (about 0.50) are the same for every setup.
+- **Much of it is where the cutoff sits.** `noul_pos` under-calls "positive": its average P(positive) is 0.45 against a true positive rate of 0.57. Choosing the cutoff on the calibration split and applying it to the test split brings the setups to within about three points of each other (0.756–0.788), although the tuned cutoffs partly reflect this dataset's label quirks, so we don't expect them to transfer. `choice2`'s best cutoff of 0.08, for example, says more about the weak and neutral labels than about Jev.
+
+Whichever setup you choose, report its accuracy together with the wording and the cutoff. Calibration, unlike accuracy, doesn't depend on picking a cutoff.
+
 ## Compared with Llama 3.1-8B
 
 The earlier project extracted confidence from a local Llama 3.1-8B-Instruct's token log-probabilities. Its cached results for 1,000 examples ([`data/reference/`](data/reference/llama31_8b_base_results.json)) are all in this dataset, so we can put Jev and Llama on **identical examples**, scored identically: the probability of the predicted label, and whether it was right. Every calibrated number below uses repeated 5-fold cross-validation, so no calibrator is scored on data it was fit on.
