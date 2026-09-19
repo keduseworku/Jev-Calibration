@@ -132,7 +132,7 @@ The same classification, asked differently, gets a different accuracy at the def
 - **The differences are all in the weak tier.** Strong (1.000), medium (about 0.997) and neutral (about 0.50) are the same for every setup.
 - **Much of it is where the cutoff sits.** `noul_pos` under-calls "positive": its average P(positive) is 0.45 against a true positive rate of 0.57. Choosing the cutoff on the calibration split and applying it to the test split brings the setups to within about three points of each other (0.756–0.788), although the tuned cutoffs partly reflect this dataset's label quirks, so we don't expect them to transfer. `choice2`'s best cutoff of 0.08, for example, says more about the weak and neutral labels than about Jev.
 
-Whichever setup you choose, report its accuracy together with the wording and the cutoff. Calibration, unlike accuracy, doesn't depend on picking a cutoff.
+Whichever setup you choose, report its accuracy together with the wording and the cutoff. The P(positive) calibration above doesn't depend on a cutoff, since it compares the probability with how often the label is positive.
 
 ## Compared with Llama 3.1-8B
 
