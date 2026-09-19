@@ -1,5 +1,10 @@
-"""Tweet-sized (1600x900) charts, one message each. Fixed color per entity: Noul blue, Choice orange."""
+"""Tweet-sized (1600x900) charts, one message each. Fixed color per entity: Noul blue, Choice orange.
+
+Usage: social_images.py            -> images/social  (with a repo footer, for posting)
+       social_images.py --article  -> images/article (no footer; adds the Platt/isotonic and calibration-size charts)
+"""
 import json
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -7,10 +12,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
-OUT = Path("images/social"); OUT.mkdir(parents=True, exist_ok=True)
+ARTICLE = "--article" in sys.argv
+OUT = Path("images/article" if ARTICLE else "images/social"); OUT.mkdir(parents=True, exist_ok=True)
 SURF, INK, INK2, MUTED, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#8a8983", "#e6e5e0"
 BLUE, ORANGE, AQUA, VIOLET, GRAY = "#2a78d6", "#eb6834", "#1baf7a", "#4a3aa7", "#9a9994"
-FOOT = "github.com/AnthusAI/Jev-Calibration"
+FOOT = "" if ARTICLE else "github.com/AnthusAI/Jev-Calibration"
 plt.rcParams.update({"font.family": "DejaVu Sans", "axes.facecolor": SURF, "figure.facecolor": SURF, "axes.edgecolor": GRID,
                      "axes.labelcolor": INK2, "xtick.color": INK2, "ytick.color": INK2, "text.color": INK})
 
@@ -24,7 +30,7 @@ def frame(title, subtitle, foot_extra=""):
     fig = plt.figure(figsize=(8, 4.5), dpi=200)
     fig.text(.045, .945, title, fontsize=16, fontweight="bold", va="top")
     fig.text(.045, .875, subtitle, fontsize=10.5, color=INK2, va="top")
-    fig.text(.955, .012, (foot_extra + "  " if foot_extra else "") + FOOT, fontsize=8, color=MUTED, ha="right")
+    if FOOT: fig.text(.955, .012, FOOT, fontsize=8, color=MUTED, ha="right")
     return fig
 
 
@@ -129,3 +135,55 @@ ax.legend(handles=[Line2D([], [], marker="o", ls="", ms=9, color=GRAY, label="Ra
                    Line2D([], [], marker="o", ls="", ms=9, color=AQUA, label="Isotonic regression")],
           loc="lower right", frameon=False, fontsize=10, bbox_to_anchor=(1.0, .02))
 save(fig, "5_calibration_fixes.png")
+
+
+if ARTICLE:
+    import numpy as np
+    from jev_calibration.calibrate import Isotonic, PlattLogit
+    from jev_calibration.dataset import load_dataset
+    from jev_calibration.plots_variants import binned
+    from jev_calibration.splits import load_or_make_splits
+    from jev_calibration.variants import p_pos_signals
+
+    rows = load_dataset(); splits = load_or_make_splits(rows); meta = {r["id"]: r for r in rows}
+    S, Y = [], []
+    for line in open("data/jev_variants.jsonl"):
+        r = json.loads(line)
+        if splits[r["id"]] == "calibration":
+            S.append(p_pos_signals(r["answers"])["noul_pos"]); Y.append(int(meta[r["id"]]["expected"] == "positive"))
+    S, Y = np.array(S), np.array(Y)
+    platt, iso = PlattLogit().fit(S, Y), Isotonic().fit(S, Y)
+    xs = np.linspace(0, 1, 600); flat = xs[(iso.predict(xs) > .63) & (iso.predict(xs) < .67)]
+    print("isotonic plateau ~0.65 spans raw", round(flat.min(), 2), "to", round(flat.max(), 2))
+
+    fig = frame("Platt bends a curve. Isotonic follows the data.",
+                "Jev's Noul answer, mapped to how often the label was positive (5,280 calibration examples)")
+    ax = fig.add_axes([.085, .15, .87, .62]); style(ax)
+    ax.plot([0, 1], [0, 1], "--", color=MUTED, lw=1.4, zorder=1, label="Raw, as stated")
+    ax.plot(xs, platt.predict(xs), color=VIOLET, lw=2.6, zorder=3, label="Platt scaling")
+    ax.step(xs, iso.predict(xs), where="post", color=AQUA, lw=2.6, zorder=3, label="Isotonic regression")
+    g = binned(S, Y, n_bins=12)
+    ax.scatter(g.s, g.y, s=np.sqrt(g.n) * 6, color=INK, alpha=.85, zorder=4, edgecolor=SURF, linewidth=1.5, label="What actually happened")
+    ax.annotate("Raw scores from about %.2f to %.2f\nall landed near 65%% positive" % (flat.min(), flat.max()), (np.mean([flat.min(), flat.max()]), .65), (.62, .30),
+                fontsize=10, color=INK2, ha="left", arrowprops=dict(arrowstyle="-", color=MUTED, lw=1))
+    ax.set(xlim=(0, 1), ylim=(0, 1.04), xlabel="Jev's raw P(positive)", ylabel="How often the label was positive")
+    ax.set_xticks([0, .25, .5, .75, 1]); ax.set_xticklabels(["0", "0.25", "0.5", "0.75", "1"]); ax.set_yticks([0, .25, .5, .75, 1]); ax.set_yticklabels(["0", "25%", "50%", "75%", "100%"])
+    ax.legend(loc="upper left", frameon=False, fontsize=10)
+    save(fig, "6_platt_vs_isotonic.png")
+
+    cs = json.load(open("results/calibration_size.json")); sizes = cs["sizes"]
+    fig = frame("A few hundred labeled examples get you most of the way",
+                "Held-out error by calibration-set size (200 draws per size; band = 10th–90th percentile)")
+    for k, (setup, name) in enumerate((("noul_pos", "Noul (yes/no)"), ("choice2", "Choice (pick one)"))):
+        ax = fig.add_axes([.085 + k * .455, .17, .42, .58]); style(ax)
+        d = cs["variants"][setup]
+        for m, col, lab in (("platt_logit", VIOLET, "Platt scaling"), ("isotonic", AQUA, "Isotonic regression")):
+            mean = np.array([d[f"{m}@{n}"]["ece_mean"] for n in sizes]) * 100
+            lo = np.array([d[f"{m}@{n}"]["ece_p10"] for n in sizes]) * 100; hi = np.array([d[f"{m}@{n}"]["ece_p90"] for n in sizes]) * 100
+            ax.fill_between(sizes, lo, hi, color=col, alpha=.15, lw=0); ax.plot(sizes, mean, "-o", color=col, lw=2.4, ms=6, mec=SURF, mew=1.5, label=lab)
+        ax.axhline(d["raw_ece"] * 100, color=MUTED, ls="--", lw=1.4, label="Uncalibrated")
+        ax.set_xscale("log"); ax.set_xlim(17, 6500); ax.set_ylim(0, 18); ax.set_xticks([20, 50, 100, 200, 500, 1000, 5000]); ax.set_xticklabels(["20", "50", "100", "200", "500", "1k", "5k"])
+        ax.set_title(name, fontsize=11.5, loc="left", color=INK, pad=8); ax.set_xlabel("Labeled examples used to calibrate", labelpad=6)
+        if k == 0: ax.set_ylabel("Calibration error (percentage points)"); ax.legend(loc="upper right", frameon=False, fontsize=9.5)
+        else: plt.setp(ax.get_yticklabels(), visible=False)
+    save(fig, "7_calibration_set_size.png")
