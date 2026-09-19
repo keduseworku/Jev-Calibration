@@ -108,3 +108,44 @@ def size_plot(res: dict, raw: dict, path, metric="ece"):
         ax.set_xscale("log"); ax.set_xlabel("calibration examples"); ax.set_title(v, fontsize=10); ax.grid(alpha=.3)
     axes[0][0].set_ylabel(f"{metric.upper()} on test (mean, 10-90% band)"); axes[0][0].legend(fontsize=8)
     fig.tight_layout(); fig.savefig(path, dpi=150); plt.close(fig)
+
+
+# ---- original-style ("Total Probability") charts, shared with the Classification-with-Confidence README ----
+BLUE, BLUE_EDGE = "#a8d1ff", "#6f9bc9"
+
+
+def raw_histogram(conf, title, path, subtitle=None, ax=None, ylim=None):
+    own = ax is None
+    if own: fig, ax = plt.subplots(figsize=(8, 6))
+    ax.hist(conf, bins=np.linspace(0.495, 1.005, 52), color=BLUE, edgecolor="#333", linewidth=.8)
+    ax.set_xlim(0.475, 1.025); ax.grid(alpha=.3); ax.set_axisbelow(True)
+    ax.set_title(title, fontsize=13, fontweight="bold"); ax.set_xlabel("Total Probability Score", fontsize=11)
+    ax.set_ylabel("Number of Predictions", fontsize=11)
+    if ylim: ax.set_ylim(0, ylim)
+    if subtitle: ax.text(.5, .95, subtitle, transform=ax.transAxes, ha="center", va="top", style="italic", color="#555", fontsize=9)
+    if own: fig.tight_layout(); fig.savefig(path, dpi=150); plt.close(fig)
+
+
+def raw_reliability(conf, correct, title, path=None, ax=None):
+    """5% stripes; each dot is one bucket, sized by count and labeled with it."""
+    own = ax is None
+    if own: fig, ax = plt.subplots(figsize=(7, 7))
+    conf, correct = np.asarray(conf, float), np.asarray(correct, float)
+    edges = np.linspace(0, 1, 21)
+    for k in range(0, 20, 2): ax.axvspan(edges[k], edges[k + 1], color="#eef7f7", zorder=0)
+    xs, ys, ns = [], [], []
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        m = (conf > lo) & (conf <= hi)
+        if m.any(): xs.append(conf[m].mean()); ys.append(correct[m].mean()); ns.append(int(m.sum()))
+    ax.plot([0, 1], [0, 1], "--", color="#444", lw=1.8, label="Perfect Calibration", zorder=2)
+    ax.plot(xs, ys, "-", color=BLUE, lw=2, zorder=3)
+    ax.scatter(xs, ys, s=[110 + 1500 * np.sqrt(n / len(conf)) for n in ns], color=BLUE, edgecolor=BLUE_EDGE, linewidth=1.5, zorder=4)
+    for x, y, n in zip(xs, ys, ns): ax.text(x, y, str(n), ha="center", va="center", fontsize=8, fontweight="bold", zorder=5)
+    ax.set(xlim=(-.02, 1.08), ylim=(-.02, 1.08), xlabel="Total Probability", ylabel="Accuracy")
+    ax.set_xticks(np.linspace(0, 1, 6)); ax.set_xticklabels([f"{int(t*100)}%" for t in np.linspace(0, 1, 6)])
+    ax.set_yticks(np.linspace(0, 1, 6)); ax.set_yticklabels([f"{int(t*100)}%" for t in np.linspace(0, 1, 6)])
+    ax.grid(alpha=.3); ax.set_title(title, fontsize=13, fontweight="bold")
+    from matplotlib.lines import Line2D
+    ax.legend(handles=[Line2D([], [], marker="o", ls="", ms=8, mfc=BLUE, mec=BLUE_EDGE, label="Model Calibration"),
+                       Line2D([], [], ls="--", color="#444", label="Perfect Calibration")], loc="lower right", fontsize=8)
+    if own: fig.tight_layout(); fig.savefig(path, dpi=150); plt.close(fig)

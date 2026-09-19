@@ -37,6 +37,18 @@ Accuracy is very uneven across the tiers, and that is most of the story:
 
 The `neutral_*` files carry deliberately arbitrary labels (a "domain bias" experiment from the original project), so ~50% there is the expected result, not a Jev failure. We report results with and without that tier.
 
+### What the raw scores look like
+
+The original project started by plotting the raw "total probability" (the probability of the predicted answer) for 1,000 random predictions. Here is the same view for Jev's Noul answers on the same 1,000 examples (its Llama 3.1-8B counterpart is in the comparison below):
+
+![Jev raw total probability histogram](images/comparison/raw_confidence_histogram_jev_noul.png)
+
+Jev gives a wide spread rather than a single spike, with a bump around 97–99%. Then the check that matters: how accurate was each bucket?
+
+![Jev raw total probability vs actual accuracy](images/comparison/reliability_raw_jev_noul.png)
+
+Each dot is a 5% bucket, labeled with how many predictions landed in it. The top buckets (up to 100%) sit on or above the diagonal, the 264 predictions in the very top bucket were all correct, and the middle of the range (55–80%) falls *below* the diagonal: confident, but often wrong. Those mid-range misses are largely the weak and neutral examples.
+
 A **reliability diagram** groups predictions by predicted probability and plots the fraction that were actually positive. A calibrated model sits on the diagonal. Jev's raw probabilities don't:
 
 ![Reliability, raw vs Platt vs isotonic](images/variants/reliability_grid.png)
@@ -91,6 +103,36 @@ What we found:
 
 ![Accuracy by tier](images/variants/accuracy_by_strength.png)
 
+## Compared with Llama 3.1-8B
+
+The earlier project extracted confidence from a local Llama 3.1-8B-Instruct's token log-probabilities. Its cached results for 1,000 examples ([`data/reference/`](data/reference/llama31_8b_base_results.json)) are all in this dataset, so we can put Jev and Llama on **identical examples**, scored identically: the probability of the predicted label, and whether it was right. Every calibrated number below uses repeated 5-fold cross-validation, so no calibrator is scored on data it was fit on.
+
+![Raw histograms, same examples](images/comparison/histogram_comparison.png)
+
+![Raw reliability, same examples](images/comparison/reliability_comparison.png)
+
+| (1,000 examples) | Llama 3.1-8B | Jev (Noul) | Jev (Choice) |
+|---|---|---|---|
+| Accuracy | 0.722 | 0.743 | 0.776 |
+| Mean raw confidence | 0.891 | 0.799 | 0.921 |
+| **Raw ECE** | 0.169 | **0.073** | 0.147 |
+| ECE after Platt (CV) | 0.048 | 0.051 | 0.074 |
+| ECE after isotonic (CV) | 0.021 | 0.022 | 0.016 |
+| Brier after isotonic (CV) | 0.177 | 0.139 | 0.131 |
+| **AUROC** (does confidence separate right from wrong?) | 0.719 | **0.828** | **0.828** |
+| Predictions at ≥95% confidence | 532, 83.5% correct | 284, **100%** correct | 686, 89.7% correct |
+
+Excluding the arbitrary-label neutral tier (794 examples): AUROC is 0.762 for Llama and 0.896 / 0.897 for Jev; at ≥95% confidence Llama has 455 predictions at 87.9%, Jev's Noul 284 at 100%, and its Choice 595 at 95.8%.
+
+What this says:
+
+- **Raw calibration differs by how you ask Jev.** Llama and Jev's Choice are both overconfident (mean confidence 0.89 and 0.92 against accuracy of 0.72 and 0.78). Jev's Noul is much closer.
+- **Once calibrated with isotonic regression, all three reach about the same error (ECE ≈ 0.02).** Calibration can repair the *reliability* of a confidence score for either kind of model.
+- **What differs is how informative the score is.** Jev's confidence separates right from wrong answers clearly better (AUROC 0.83 vs 0.72), and its calibrated Brier score is lower (0.13–0.14 vs 0.18). Calibration fixes what the numbers mean; it can't add information the score doesn't contain. In practice, Jev's most confident answers are more trustworthy: its top Noul bucket was right every time, and Llama's top bucket was right 83.5% of the time.
+- **A note on the old repo's isotonic numbers.** Its cached isotonic ECE is effectively zero because the calibrator was scored on the same 1,000 examples it was fit on. Under cross-validation Llama gets 0.021.
+
+**What this comparison doesn't cover.** It uses the *base* Llama 3.1-8B: the fine-tuned model's per-example results weren't saved in that repo, so comparing it would mean retraining. It also doesn't include OpenAI models. Our earlier work found that the log-probabilities from some widely used hosted models were too concentrated to serve as a useful confidence, and that reasoning models often don't expose them at all (see [Making Decisions Instead of Generating Text](https://anth.us/blog/making-decisions-instead-of-generating-text/)), but we haven't re-run that here, so nothing in this repo makes a claim about them. Prompts also differ between the systems, so treat the comparison as "same data, different systems", not a controlled test of the models.
+
 ## How much calibration data do you need?
 
 The usual advice is that isotonic regression is data-hungry and Platt scaling is the safe choice for small calibration sets. We tested that directly: draw *n* labeled examples at random from the calibration split (200 times for each *n*), fit each method, and score it on the same fixed test split.
@@ -141,6 +183,7 @@ cp .env.example .env                       # add TYPESAFE_API_KEY (console.types
 .venv/bin/python scripts/run_variants.py   # variant panel (resumable): data/jev_variants.jsonl
 .venv/bin/python scripts/analyze_variants.py   # results/variants.json + images/variants/
 .venv/bin/python scripts/calibration_size.py   # results/calibration_size.json (no API calls)
+.venv/bin/python scripts/compare_llama.py      # Jev vs Llama 3.1-8B, histograms + reliability (no API calls)
 .venv/bin/pytest                           # no API key needed
 ```
 

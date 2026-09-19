@@ -6,21 +6,24 @@ from sklearn.linear_model import LogisticRegression
 EPS = 0.005  # Jev rounds probabilities to 2 decimals; clip at half that resolution
 
 
-def logit(p):
-    p = np.clip(np.asarray(p, float), EPS, 1 - EPS)
+def logit(p, eps: float = EPS):
+    p = np.clip(np.asarray(p, float), eps, 1 - eps)
     return np.log(p / (1 - p))
 
 
 class PlattLogit:
     """Platt scaling on logit(score): P(y=1) = sigmoid(a * logit(s) + b)."""
 
+    def __init__(self, eps: float = EPS):
+        self.eps = eps
+
     def fit(self, scores, labels):
         self.lr = LogisticRegression(C=1e6, max_iter=1000)  # effectively unregularized
-        self.lr.fit(logit(scores).reshape(-1, 1), np.asarray(labels, int))
+        self.lr.fit(logit(scores, self.eps).reshape(-1, 1), np.asarray(labels, int))
         return self
 
     def predict(self, scores):
-        return self.lr.predict_proba(logit(scores).reshape(-1, 1))[:, 1]
+        return self.lr.predict_proba(logit(scores, self.eps).reshape(-1, 1))[:, 1]
 
     @property
     def params(self):
