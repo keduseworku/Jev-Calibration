@@ -16,6 +16,19 @@ Throughout, "confidence" means the top-label probability. Jev's API also returns
 
 We calibrate two related quantities. In the question-variant experiments it's P(positive) against whether the label is positive. In the Llama comparison and the accuracy-vs-coverage charts it's the confidence in the predicted answer against whether that answer was correct. Their ECEs measure different things, so a model's number in one isn't comparable to its number in the other (for example, `noul_pos` scores 0.117 as P(positive) on the full test split and 0.073 as confidence in the predicted answer on the 1,000-example comparison sample).
 
+## Key takeaways
+
+All of this comes from one constructed sentiment dataset and one model version (`jev-1.13.0`); see [Limitations](#limitations).
+
+1. **Higher confidence really does mean more likely to be right.** On the same 1,000 examples, Jev's confidence separates right answers from wrong ones better than Llama 3.1-8B's (AUROC 0.83 vs 0.72; 0.90 vs 0.76 without the neutral tier). For Noul, accuracy rises from 47.6% at 50–60% confidence to 100% above 95% (2,104 of 2,104 answers). Evidence: [comparison table](#compared-with-llama-31-8b), [`results/comparison_llama.json`](results/comparison_llama.json), [`results/raw_confidence_bands.json`](results/raw_confidence_bands.json).
+2. **Raw confidence is modestly overconfident for Noul and clearly overconfident for Choice.** Noul's mean confidence is 79.0% against 72.3% accuracy (+6.7 points; +1.3 without the neutral tier, whose labels are arbitrary). Choice's is 91.4% against 76.1% (+15.3; +9.1). Evidence: [raw reliability charts](images/raw/reliability_raw_grid.png).
+3. **For Noul the overconfidence sits in the middle of the range.** Above 90% confidence, Noul is at or above its stated confidence (95.9% and 100.0% accurate). At 60–80%, an average confidence of 70.7% comes with 54.3% accuracy. Evidence: [band table](#what-the-raw-scores-look-like).
+4. **Choice's confidence tells you almost nothing below 95%.** Accuracy is 50–57% at every stated confidence from 50% to 95%. Only the top band is informative, and it holds 63% of all answers: 99.4% average confidence with 90.2% accuracy (96.1% without the neutral tier). That band includes many ambiguous texts, with 2,276 weak-tier examples among its 5,559. Evidence: [band table](#what-the-raw-scores-look-like), [`results/raw_confidence_bands.json`](results/raw_confidence_bands.json).
+5. **Calibrate before using confidence for thresholds or cost-based decisions.** Isotonic regression, fit on a calibration split, cut the error (ECE) of P(positive) from 0.117 to 0.008 on held-out data, where Platt scaling reached 0.052. A few hundred labeled examples capture most of the benefit, and isotonic matched or beat Platt at every size from 20 to 5,280. Evidence: [`results/variants.json`](results/variants.json), [calibration-size chart](images/variants/calibration_set_size.png).
+6. **How you ask changes the raw numbers and the accuracy, but matters much less once calibrated.** Across 11 setups, raw ECE ranged from 0.064 to 0.160 and accuracy at the default cutoff from 0.723 to 0.769; after isotonic, ECE ranged from 0.006 to 0.018. Evidence: [ECE chart](images/variants/ece_all.png), [accuracy table](#accuracy-depends-on-the-setup-and-on-the-cutoff).
+
+In practice: treat Noul answers above about 90% confidence as reliable, route the middle to review, don't rely on Choice's raw confidence, and calibrate on your own labeled data before setting any threshold.
+
 ## What Jev gives you
 
 [Jev](https://typesafe.ai/blog/introducing-system-one-models-and-jev) accepts some text ("state") and a set of typed questions, and returns a typed answer to each:
@@ -36,7 +49,7 @@ Three things we observed on `jev-1.13.0`:
 
 If Jev says 80% positive, are 80% of such texts positive? We checked with the same 10,000-line sentiment set as the earlier project (strong / medium / weak / neutral × positive / negative). Exact repeats were dropped, leaving **8,801 unique examples**, split 60/40 (stratified, seed 42) into a **calibration** set (5,280) and an untouched **test** set (3,521).
 
-Each example goes to Jev as **one request with several questions**. The first one is a Noul: *"Is the overall sentiment of this text positive?"*
+Each example goes to Jev as **one request with several questions**. Two of them are used throughout: a Noul, *"Is the overall sentiment of this text positive?"*, and a Choice between `positive` and `negative`. We also asked several other versions of the question, described [below](#does-the-way-you-ask-matter).
 
 Accuracy is very uneven across the tiers, and that is most of the story:
 
@@ -51,21 +64,33 @@ The `neutral_*` files carry deliberately arbitrary labels (a "domain bias" exper
 
 ### What the raw scores look like
 
-The original project started by plotting the raw "total probability" (the probability of the predicted answer) for 1,000 random predictions. Here is the same view for Jev's Noul answers on the same 1,000 examples (its Llama 3.1-8B counterpart is in the comparison below):
+The original project started by plotting the raw "total probability" (the probability of the predicted answer) for its predictions. Here is the same view for Jev on all 8,801 examples, for both ways of asking the question:
 
-![Jev raw total probability histogram](images/comparison/raw_confidence_histogram_jev_noul.png)
+![Jev Noul: raw total probability distribution](images/raw/histogram_raw_noul.png)
+![Jev Choice: raw total probability distribution](images/raw/histogram_raw_choice.png)
 
-Jev gives a wide spread rather than a single spike, with a bump around 97–99%. Then the check that matters: how accurate was each bucket?
+Noul spreads its answers across the range, with 2,104 (24%) above 95%. Choice piles 5,559 (63%) above 95%. Then the check that matters: how accurate was each bucket? Each dot below is a 5% bucket (including its upper edge), labeled with how many predictions landed in it; the right-hand column leaves out the neutral tier.
 
-![Jev raw total probability vs actual accuracy](images/comparison/reliability_raw_jev_noul.png)
+![Raw total probability vs actual accuracy, Noul and Choice](images/raw/reliability_raw_grid.png)
 
-Each dot is a 5% bucket, labeled with how many predictions landed in it. The top buckets (up to 100%) sit on or above the diagonal, the 264 predictions in the very top bucket were all correct, and the middle of the range (55–80%) falls *below* the diagonal: confident, but often wrong. Of the 358 predictions in the 55–80% range, 357 come from the weak and neutral tiers, and they account for all 181 errors there.
+By confidence band, all 8,801 examples:
+
+| Noul | Answers | Mean confidence | Accuracy | | Choice | Answers | Mean confidence | Accuracy |
+|---|---|---|---|---|---|---|---|---|
+| 50–60% | 1,617 | 55.1% | 47.6% | | 50–60% | 491 | 55.2% | 49.5% |
+| 60–80% | 2,703 | 70.7% | 54.3% | | 60–80% | 1,123 | 71.0% | 50.4% |
+| 80–90% | 1,605 | 85.5% | 80.0% | | 80–90% | 845 | 85.8% | 50.8% |
+| 90–95% | 772 | 93.1% | 95.9% | | 90–95% | 783 | 93.1% | 57.0% |
+| 95–100% | 2,104 | 97.8% | 100.0% | | 95–100% | 5,559 | 99.4% | 90.2% |
+
+- **Noul's extremes are trustworthy.** Its answers above 95% were all correct, and they are almost all clear-cut examples (978 strong, 1,083 medium, 42 weak, 1 neutral). The weak spot is the middle: of the 3,428 answers with 55–80% confidence, 2,303 are weak-tier and 1,108 neutral-tier, and those two tiers account for 1,636 of the 1,637 errors there.
+- **Choice has two regimes.** From 50% to 95% stated confidence, accuracy hovers around 50–57%: a coin flip whatever the stated number. Above 95% it's right 90.2% of the time (96.1% without the neutral tier). Unlike Noul, its top band is not limited to clear cases: it includes 2,276 weak-tier examples (91.7% correct) and 769 neutral-tier ones (53.7% correct).
 
 A **reliability diagram** groups predictions by predicted probability and plots the fraction that were actually positive. A calibrated model sits on the diagonal. Jev's raw probabilities don't:
 
 ![Reliability, raw vs Platt vs isotonic](images/variants/reliability_grid.png)
 
-Left column: raw. Jev is under-confident about positives in the middle of the range and its curve is bumpy. On the Choice variants it's worse: at a raw P(positive) of about 0.1, roughly 46% of the labels are positive.
+Left column: raw. The curves are bumpy and, for the Noul variants, sit above the diagonal in the middle of the range: Jev's P(positive) understates how often the label is positive (its average is 0.45 against a true rate of 0.57 for `noul_pos`). On the Choice variants it's worse: at a raw P(positive) of about 0.1, roughly 46% of the labels are positive.
 
 ## Two ways to fix it
 
@@ -96,14 +121,25 @@ Raw ECE ranged from 0.064 to 0.160 across setups, Platt from 0.026 to 0.115, and
 
 ## Does the way you ask matter?
 
-We sent a panel of alternative setups for the same question, all in one request per example (`jev_calibration/variants.py`):
+The charts from here on have many lines and bars because Jev lets you ask the same underlying question in several forms, and we didn't know in advance whether the form would affect confidence. If it did, any single number would depend on an arbitrary choice of phrasing; if it didn't, the findings are about Jev rather than about one prompt. So instead of picking one form, we asked all of them. Questions in one request are evaluated independently, so we sent the whole panel in a single request per example (`jev_calibration/variants.py`), which made the extra questions cheap.
 
-- `noul_pos` / `noul_neg`: ask "is it positive?" vs "is it negative?"
-- `noul_favorable`: different wording
-- `choice2`, `choice2_swapped`, `choice2_described`: a two-way Choice, reversed option order, and options with descriptions
-- `choice3`: adds a `neutral` option
-- `score5` / `score5_mean`: a five-level rubric, using the level probabilities or the expected score
-- `ensemble_noul` / `ensemble_all`: averages across framings
+Each series is one way of asking, reduced to a single number, P(positive), so they can be compared directly:
+
+| Series | How it's asked | What it tests |
+|---|---|---|
+| `noul_pos` | Noul: "Is the overall sentiment of this text positive?" | the baseline Noul used above |
+| `noul_neg` | Noul about *negative* sentiment; we use 1 − answer | does the polarity of the question matter? |
+| `noul_favorable` | Noul, worded as "favorable, approving, or satisfied" | does the wording matter? |
+| `choice2` | Choice between positive and negative | the baseline Choice used above |
+| `choice2_swapped` | same, with the options listed in reverse | does option order matter? |
+| `choice2_described` | same, with a description for each option | do option descriptions help? |
+| `choice3` | adds a "neutral" option; P(positive) = positive ÷ (positive + negative) | does an escape option help? |
+| `score5` | five-level rubric; P(positive) from the top two levels vs. the bottom two | a graded question, using its level probabilities |
+| `score5_mean` | same rubric, using the expected score ÷ 4 | a graded question, using its expected value |
+| `ensemble_noul` | average of the three Noul variants | does averaging framings help? |
+| `ensemble_all` | average of eight of the variants | the same across all question types |
+
+In the charts, each series appears three times: raw, after Platt scaling, and after isotonic regression. The sections above use only `noul_pos` and `choice2`; the rest of this section shows whether that choice mattered.
 
 What we found:
 
@@ -215,6 +251,7 @@ cp .env.example .env                       # add TYPESAFE_API_KEY (console.types
 .venv/bin/python scripts/analyze_variants.py   # results/variants.json + images/variants/
 .venv/bin/python scripts/calibration_size.py   # results/calibration_size.json (no API calls)
 .venv/bin/python scripts/compare_llama.py      # Jev vs Llama 3.1-8B, histograms + reliability (no API calls)
+.venv/bin/python scripts/raw_confidence.py     # raw confidence vs accuracy, Noul and Choice (no API calls)
 .venv/bin/pytest                           # no API key needed
 ```
 
