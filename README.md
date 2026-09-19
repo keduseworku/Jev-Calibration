@@ -4,16 +4,17 @@
 
 This is the follow-up to [Making Decisions Instead of Generating Text](https://anth.us/blog/making-decisions-instead-of-generating-text/), which ended with "test calibration against a held-out set." It reuses the dataset and calibration ideas from [Classification-with-Confidence](https://github.com/AnthusAI/Classification-with-Confidence), where we squeezed confidence out of a local LLM's token log-probabilities. Here the model hands us the probabilities directly.
 
-## Three terms, kept separate
+## Accuracy, confidence, and calibration
 
-- **Accuracy** is *measured*: the share of predictions that agreed with the ground-truth labels, over some set of examples.
-- **Confidence** is *stated by the model* for each prediction: how strongly it favors the answer it gave, meaning the probability it assigns to that answer. A Noul answer of 0.80 is 80% confident in "yes"; a Noul answer of 0.20 is 80% confident in "no". Confidence says nothing on its own about whether the answer is right.
-- **Calibration** is the relationship between the two: among predictions made with about 90% confidence, is accuracy about 90%? A reliability diagram plots one against the other, and ECE (expected calibration error) is the average gap. A model can be accurate and poorly calibrated, or well calibrated and not very accurate.
+Three ideas run through everything below:
 
-Two clarifications to avoid confusion below:
+- **Accuracy** is measured: the share of predictions that agreed with the ground-truth labels, over some set of examples.
+- **Confidence** belongs to a single prediction: how strongly the model favors the answer it gave, meaning the probability it assigns to that answer. A Noul answer of 0.80 is 80% confident in "yes"; a Noul answer of 0.20 is 80% confident in "no". Confidence says nothing on its own about whether the answer is right.
+- **Calibration** is how well the two line up: among predictions made with about 90% confidence, is accuracy about 90%? A reliability diagram plots one against the other, and expected calibration error (ECE) is the average gap between them. A model can be accurate but poorly calibrated, or well calibrated but not very accurate.
 
-1. **Jev's API has a field literally named `confidence`. We don't use it as "confidence" in the sense above** (see the next section: it's a different statistic). When we say confidence, we mean the top-label probability. We write "the `confidence` field" for Jev's own.
-2. **We calibrate two slightly different things.** In the question-variant experiments we calibrate P(positive) against whether the label is positive (a class probability). In the Llama comparison and the accuracy-vs-coverage charts we calibrate the *confidence in the predicted answer* against whether that answer was correct. Their ECEs aren't interchangeable (for example, 0.117 for `noul_pos` as P(positive) on the full test split, versus 0.073 as top-label confidence on the 1,000-example comparison sample).
+Throughout, "confidence" means the top-label probability. Jev's API also returns a field named `confidence`, which is a different statistic, described below, and we refer to it as "the `confidence` field".
+
+We calibrate two related quantities. In the question-variant experiments it's P(positive) against whether the label is positive. In the Llama comparison and the accuracy-vs-coverage charts it's the confidence in the predicted answer against whether that answer was correct. Their ECEs measure different things, so a model's number in one isn't comparable to its number in the other (for example, `noul_pos` scores 0.117 as P(positive) on the full test split and 0.073 as confidence in the predicted answer on the 1,000-example comparison sample).
 
 ## What Jev gives you
 
@@ -28,7 +29,7 @@ Two clarifications to avoid confusion below:
 Three things we observed on `jev-1.13.0`:
 
 1. **Probabilities are rounded to two decimals**, so many answers tie at exactly 0.00 or 1.00. That matters for calibration.
-2. **For a two-option Choice, the `confidence` field is `2·p_top − 1`** (to within rounding). For example, a top probability of 0.72 comes with a `confidence` of 0.45. It's a certainty measure, not a probability that the answer is right, so it shouldn't be compared with accuracy directly, and it carries no information beyond the top probability. The documentation calls it "a statistic computed from the probability distribution", so this isn't a surprise, but it means you can't get a second opinion from it on binary questions.
+2. **For a two-option Choice, the `confidence` field is `2·p_top − 1`** (to within rounding). For example, a top probability of 0.72 comes with a `confidence` of 0.45. It measures how peaked the distribution is, not the probability that the answer is right, so it isn't on the same scale as accuracy, and it carries no information beyond the top probability. The documentation calls it "a statistic computed from the probability distribution", so this isn't a surprise, but it means you can't get a second opinion from it on binary questions.
 3. **It's cheap and fast.** About 330 input tokens per request (~$0.12 for the whole dataset at the published $42 per billion input tokens; output tokens are free), median latency 0.24 seconds, and no rate-limiting at concurrency 8.
 
 ## Do these numbers mean what they say?
