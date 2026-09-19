@@ -3,7 +3,7 @@ import numpy as np
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
 
-EPS = 1e-6
+EPS = 0.005  # Jev rounds probabilities to 2 decimals; clip at half that resolution
 
 
 def logit(p):
