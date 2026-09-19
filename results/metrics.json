@@ -129,7 +129,8 @@
         "brier": 0.17464583925021301,
         "log_loss": 0.5914169425075102,
         "mean_confidence": 0.8278159613746096,
-        "accuracy": 0.7602953706333428
+        "accuracy": 0.7602953706333428,
+        "note": "raw ECE/Brier not meaningful: this field is not on a probability-of-correct scale"
       },
       "platt_logit": {
         "n": 3521,

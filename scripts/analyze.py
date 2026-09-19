@@ -25,6 +25,8 @@ SIGNALS = {
 out, curves = {"n_calibration": len(cal), "n_test": len(test), "signals": {}}, {}
 for name, (score, target) in SIGNALS.items():
     res = {"raw": metrics.summary(test[score], test[target])}
+    if name == "choice_confidence":  # 2p-1 is a certainty statistic, not a probability of being correct
+        res["raw"]["note"] = "raw ECE/Brier not meaningful: this field is not on a probability-of-correct scale"
     for cname, C in CALIBRATORS.items():
         c = C().fit(cal[score], cal[target])
         res[cname] = {**metrics.summary(c.predict(test[score]), test[target]), "params": c.params}

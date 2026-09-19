@@ -1,8 +1,19 @@
 # Getting Calibrated Confidence from Jev
 
-> **TL;DR**: Jev returns a probability with every answer, but a probability isn't automatically an *accuracy*. On 8,801 labeled sentiment examples, Jev's raw probabilities were systematically off (expected calibration error 0.117). A two-parameter Platt curve cut that to 0.052. **Isotonic regression cut it to 0.008**, because the miscalibration wasn't sigmoid-shaped. It beat Platt even with only 20–100 calibration examples, and once calibrated, the way you phrase the question matters much less than you'd expect.
+> **TL;DR**: Jev returns a probability with every answer, and how strongly it favors an answer is its *confidence*. That confidence is only useful if it matches reality: when Jev is 90% sure, it should be right about 90% of the time. On 8,801 labeled sentiment examples, Jev's raw probabilities didn't do that (expected calibration error 0.117). A two-parameter Platt curve cut that to 0.052. **Isotonic regression cut it to 0.008**, because the miscalibration wasn't sigmoid-shaped. It beat Platt even with only 20–100 calibration examples, and once calibrated, the way you phrase the question matters much less than you'd expect.
 
 This is the follow-up to [Making Decisions Instead of Generating Text](https://anth.us/blog/making-decisions-instead-of-generating-text/), which ended with "test calibration against a held-out set." It reuses the dataset and calibration ideas from [Classification-with-Confidence](https://github.com/AnthusAI/Classification-with-Confidence), where we squeezed confidence out of a local LLM's token log-probabilities. Here the model hands us the probabilities directly.
+
+## Three terms, kept separate
+
+- **Accuracy** is *measured*: the share of predictions that agreed with the ground-truth labels, over some set of examples.
+- **Confidence** is *stated by the model* for each prediction: how strongly it favors the answer it gave, meaning the probability it assigns to that answer. A Noul answer of 0.80 is 80% confident in "yes"; a Noul answer of 0.20 is 80% confident in "no". Confidence says nothing on its own about whether the answer is right.
+- **Calibration** is the relationship between the two: among predictions made with about 90% confidence, is accuracy about 90%? A reliability diagram plots one against the other, and ECE (expected calibration error) is the average gap. A model can be accurate and poorly calibrated, or well calibrated and not very accurate.
+
+Two clarifications to avoid confusion below:
+
+1. **Jev's API has a field literally named `confidence`. We don't use it as "confidence" in the sense above** (see the next section: it's a different statistic). When we say confidence, we mean the top-label probability. We write "the `confidence` field" for Jev's own.
+2. **We calibrate two slightly different things.** In the question-variant experiments we calibrate P(positive) against whether the label is positive (a class probability). In the Llama comparison and the accuracy-vs-coverage charts we calibrate the *confidence in the predicted answer* against whether that answer was correct. Their ECEs aren't interchangeable (for example, 0.117 for `noul_pos` as P(positive) on the full test split, versus 0.073 as top-label confidence on the 1,000-example comparison sample).
 
 ## What Jev gives you
 
@@ -17,7 +28,7 @@ This is the follow-up to [Making Decisions Instead of Generating Text](https://a
 Three things we observed on `jev-1.13.0`:
 
 1. **Probabilities are rounded to two decimals**, so many answers tie at exactly 0.00 or 1.00. That matters for calibration.
-2. **For a two-option Choice, `confidence` is `2·p_top − 1`** (to within rounding). It carries no information beyond the top probability. Its documentation calls it "a statistic computed from the probability distribution", so this isn't a surprise, but it means you can't get a second opinion from it on binary questions.
+2. **For a two-option Choice, the `confidence` field is `2·p_top − 1`** (to within rounding). For example, a top probability of 0.72 comes with a `confidence` of 0.45. It's a certainty measure, not a probability that the answer is right, so it shouldn't be compared with accuracy directly, and it carries no information beyond the top probability. The documentation calls it "a statistic computed from the probability distribution", so this isn't a surprise, but it means you can't get a second opinion from it on binary questions.
 3. **It's cheap and fast.** About 330 input tokens per request (~$0.12 for the whole dataset at the published $42 per billion input tokens; output tokens are free), median latency 0.24 seconds, and no rate-limiting at concurrency 8.
 
 ## Do these numbers mean what they say?
@@ -119,7 +130,7 @@ The earlier project extracted confidence from a local Llama 3.1-8B-Instruct's to
 | ECE after Platt (CV) | 0.048 | 0.051 | 0.074 |
 | ECE after isotonic (CV) | 0.021 | 0.022 | 0.016 |
 | Brier after isotonic (CV) | 0.177 | 0.139 | 0.131 |
-| **AUROC** (does confidence separate right from wrong?) | 0.719 | **0.828** | **0.828** |
+| **AUROC** (do higher-confidence answers tend to be the correct ones?) | 0.719 | **0.828** | **0.828** |
 | Predictions at ≥95% confidence | 532, 83.5% correct | 284, **100%** correct | 686, 89.7% correct |
 
 Excluding the arbitrary-label neutral tier (794 examples): AUROC is 0.762 for Llama and 0.896 / 0.897 for Jev; at ≥95% confidence Llama has 455 predictions at 87.9%, Jev's Noul 284 at 100%, and its Choice 595 at 95.8%.
@@ -127,8 +138,8 @@ Excluding the arbitrary-label neutral tier (794 examples): AUROC is 0.762 for Ll
 What this says:
 
 - **Raw calibration differs by how you ask Jev.** Llama and Jev's Choice are both overconfident (mean confidence 0.89 and 0.92 against accuracy of 0.72 and 0.78). Jev's Noul is much closer.
-- **Once calibrated with isotonic regression, all three reach about the same error (ECE ≈ 0.02).** Calibration can repair the *reliability* of a confidence score for either kind of model.
-- **What differs is how informative the score is.** Jev's confidence separates right from wrong answers clearly better (AUROC 0.83 vs 0.72), and its calibrated Brier score is lower (0.13–0.14 vs 0.18). Calibration fixes what the numbers mean; it can't add information the score doesn't contain. In practice, Jev's most confident answers are more trustworthy: its top Noul bucket was right every time, and Llama's top bucket was right 83.5% of the time.
+- **Once calibrated with isotonic regression, all three reach about the same error (ECE ≈ 0.02).** Calibration can make a confidence score's stated level match observed accuracy for either kind of model.
+- **What differs is how informative the confidence is.** Jev's confidence separates right from wrong answers clearly better (AUROC 0.83 vs 0.72), and its calibrated Brier score is lower (0.13–0.14 vs 0.18). Calibration fixes what the numbers mean; it can't add information the score doesn't contain. In practice, Jev's most confident answers are more trustworthy: its top Noul bucket was right every time, and Llama's top bucket was right 83.5% of the time.
 - **A note on the old repo's isotonic numbers.** Its cached isotonic ECE is effectively zero because the calibrator was scored on the same 1,000 examples it was fit on. Under cross-validation Llama gets 0.021.
 
 **What this comparison doesn't cover.** It uses the *base* Llama 3.1-8B: the fine-tuned model's per-example results weren't saved in that repo, so comparing it would mean retraining. It also doesn't include OpenAI models. Our earlier work found that the log-probabilities from some widely used hosted models were too concentrated to serve as a useful confidence, and that reasoning models often don't expose them at all (see [Making Decisions Instead of Generating Text](https://anth.us/blog/making-decisions-instead-of-generating-text/)), but we haven't re-run that here, so nothing in this repo makes a claim about them. Prompts also differ between the systems, so treat the comparison as "same data, different systems", not a controlled test of the models.
@@ -161,7 +172,7 @@ The reason to calibrate is a routing policy: auto-accept what Jev is sure about,
 
 On the non-neutral tiers, roughly the top half of decisions are accepted at 98–100% accuracy; beyond that accuracy decays. To keep accuracy at or above 95%, you could auto-accept about 65–74% of non-neutral decisions depending on the setup (about 49–52% if arbitrary-label neutral examples are included). The exact figures are in `results/variants.json`; they are sensitive to ties from Jev's rounding, so treat differences of a few points as noise.
 
-Because the mapping is now in units of accuracy, "accept above 90%" means what it says, and you can set different thresholds per question and per consequence.
+Because calibrated confidence now tracks observed accuracy, "accept above 90% confidence" means the accepted answers are right about 90% of the time, and you can set different thresholds per question and per consequence.
 
 ## Limitations
 
