@@ -25,7 +25,8 @@ def serialize(response) -> dict:
 
 
 async def run(rows: list[dict], out_path: str | Path = "data/jev_raw.jsonl",
-              concurrency: int = 8, limit: int | None = None) -> int:
+              concurrency: int = 8, limit: int | None = None, questions=None) -> int:
+    questions = questions or QUESTIONS
     load_dotenv()
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -39,7 +40,7 @@ async def run(rows: list[dict], out_path: str | Path = "data/jev_raw.jsonl",
             async with sem:
                 t0 = time.perf_counter()
                 try:
-                    resp = await client.system_one(state={"text": row["text"]}, questions=QUESTIONS)
+                    resp = await client.system_one(state={"text": row["text"]}, questions=questions)
                 except Exception as e:  # keep going; failed ids are retried on the next run
                     print(f"FAILED {row['id']}: {type(e).__name__}: {e}")
                     return
