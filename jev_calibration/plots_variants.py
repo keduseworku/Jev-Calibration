@@ -94,3 +94,17 @@ def coverage_plot(curves: dict, path, title):
         ax.plot(c.coverage, c.accuracy, lw=1.8, label=name)
     ax.set(xlabel="fraction of decisions auto-accepted", ylabel="accuracy of accepted decisions", title=title, ylim=(0.5, 1.01), xlim=(0, 1))
     ax.grid(alpha=.3); ax.legend(fontsize=8); fig.tight_layout(); fig.savefig(path, dpi=150); plt.close(fig)
+
+
+def size_plot(res: dict, raw: dict, path, metric="ece"):
+    """res: {variant: {method: {n: (mean, lo, hi)}}}; raw: {variant: value}. One panel per variant."""
+    names = list(res); fig, axes = plt.subplots(1, len(names), figsize=(4.2 * len(names), 4), sharey=True, squeeze=False)
+    for ax, v in zip(axes[0], names):
+        for m in ("platt_logit", "isotonic"):
+            ns = sorted(res[v][m]); mean = np.array([res[v][m][n][0] for n in ns])
+            lo = np.array([res[v][m][n][1] for n in ns]); hi = np.array([res[v][m][n][2] for n in ns])
+            ax.plot(ns, mean, "-o", ms=3, color=COLORS[m], label=LABELS[m]); ax.fill_between(ns, lo, hi, color=COLORS[m], alpha=.18)
+        ax.axhline(raw[v], color=COLORS["raw"], ls="--", label="Raw (uncalibrated)")
+        ax.set_xscale("log"); ax.set_xlabel("calibration examples"); ax.set_title(v, fontsize=10); ax.grid(alpha=.3)
+    axes[0][0].set_ylabel(f"{metric.upper()} on test (mean, 10-90% band)"); axes[0][0].legend(fontsize=8)
+    fig.tight_layout(); fig.savefig(path, dpi=150); plt.close(fig)

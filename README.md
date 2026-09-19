@@ -1,6 +1,6 @@
 # Getting Calibrated Confidence from Jev
 
-> **TL;DR**: Jev returns a probability with every answer, but a probability isn't automatically an *accuracy*. On 8,801 labeled sentiment examples, Jev's raw probabilities were systematically off (expected calibration error 0.117). A two-parameter Platt curve cut that to 0.052. **Isotonic regression cut it to 0.008**, because the miscalibration wasn't sigmoid-shaped. Once calibrated, the way you phrase the question matters much less than you'd expect.
+> **TL;DR**: Jev returns a probability with every answer, but a probability isn't automatically an *accuracy*. On 8,801 labeled sentiment examples, Jev's raw probabilities were systematically off (expected calibration error 0.117). A two-parameter Platt curve cut that to 0.052. **Isotonic regression cut it to 0.008**, because the miscalibration wasn't sigmoid-shaped. It beat Platt even with only 20–100 calibration examples, and once calibrated, the way you phrase the question matters much less than you'd expect.
 
 This is the follow-up to [Making Decisions Instead of Generating Text](https://anth.us/blog/making-decisions-instead-of-generating-text/), which ended with "test calibration against a held-out set." It reuses the dataset and calibration ideas from [Classification-with-Confidence](https://github.com/AnthusAI/Classification-with-Confidence), where we squeezed confidence out of a local LLM's token log-probabilities. Here the model hands us the probabilities directly.
 
@@ -91,6 +91,26 @@ What we found:
 
 ![Accuracy by tier](images/variants/accuracy_by_strength.png)
 
+## How much calibration data do you need?
+
+The usual advice is that isotonic regression is data-hungry and Platt scaling is the safe choice for small calibration sets. We tested that directly: draw *n* labeled examples at random from the calibration split (200 times for each *n*), fit each method, and score it on the same fixed test split.
+
+![ECE vs calibration set size](images/variants/calibration_set_size.png)
+
+Lines are mean ECE; bands span the 10th–90th percentile across draws; the dashed line is uncalibrated Jev. Mean ECE for `noul_pos`:
+
+| Calibration examples | 20 | 50 | 100 | 200 | 500 | 1,000 | 5,280 |
+|---|---|---|---|---|---|---|---|
+| Platt | 0.100 | 0.077 | 0.063 | 0.057 | 0.054 | 0.053 | 0.052 |
+| Isotonic | 0.089 | 0.067 | 0.048 | 0.038 | 0.026 | 0.019 | 0.008 |
+
+- **The advice didn't hold here.** Isotonic matched or beat Platt on average at every size we tried, down to 20 examples. In `score5_mean` and `ensemble_noul` the two are indistinguishable below about 50 examples, and isotonic pulls ahead from 100 on.
+- **Platt stops improving early.** By about 200 examples its error has flattened, because its shape is wrong for this data, not because it lacks examples. Isotonic keeps improving, and hadn't stopped at 5,280.
+- **With very little data, both are noisy.** At 20–30 examples the bands overlap heavily and a single unlucky draw can be worse than not calibrating (the 90th-percentile error is above the raw error).
+- **Already-decent scores need more data before calibrating pays off.** `ensemble_noul` starts with the lowest raw error (0.064). Neither method beat it on average until roughly 100 calibration examples.
+
+A practical reading: a few hundred labeled examples is enough to get most of the benefit, and isotonic is a reasonable default. Below ~50, treat a calibrator as a sanity check on direction, not a precise correction.
+
 ## Using calibrated confidence
 
 The reason to calibrate is a routing policy: auto-accept what Jev is sure about, send the rest to a person. Ranking by calibrated confidence and accepting from the top:
@@ -105,7 +125,7 @@ Because the mapping is now in units of accuracy, "accept above 90%" means what i
 
 - **One dataset, one model version, one run.** Sentiment on a constructed dataset says little about call-QA rubrics. Re-check on your own data.
 - **We looked at the test split for many variants.** Picking a "best" setup from eleven candidates on the same test data is optimistic, and we haven't computed confidence intervals. The gap between Platt and isotonic is large enough to trust; the ordering among setups isn't.
-- **Isotonic needs data.** We had 5,280 calibration examples. We haven't measured how it degrades with 200 or 500, which is where Platt's two parameters may win. That's the obvious next experiment.
+- **The calibration-size experiment resamples one pool.** Every draw comes from the same 5,280 calibration examples and is scored on the same 3,521 test examples, so draws at large sizes overlap heavily and the bands understate the true variation. The calibration and test examples share a distribution; a calibration set from a different population would do worse.
 - **Rounded probabilities and ties** limit resolution, and isotonic can only reproduce ~100 distinct levels.
 - **Calibration is per question, per model version.** Refit when the question wording, data source, or model changes.
 - **`confidence` for two-option questions adds nothing** over the probabilities. It may differ for Choices with more options; we didn't isolate that.
@@ -120,6 +140,7 @@ cp .env.example .env                       # add TYPESAFE_API_KEY (console.types
 .venv/bin/python scripts/analyze.py        # top-label calibration: results/metrics.json
 .venv/bin/python scripts/run_variants.py   # variant panel (resumable): data/jev_variants.jsonl
 .venv/bin/python scripts/analyze_variants.py   # results/variants.json + images/variants/
+.venv/bin/python scripts/calibration_size.py   # results/calibration_size.json (no API calls)
 .venv/bin/pytest                           # no API key needed
 ```
 
