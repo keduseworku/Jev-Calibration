@@ -47,7 +47,7 @@ Jev gives a wide spread rather than a single spike, with a bump around 97–99%.
 
 ![Jev raw total probability vs actual accuracy](images/comparison/reliability_raw_jev_noul.png)
 
-Each dot is a 5% bucket, labeled with how many predictions landed in it. The top buckets (up to 100%) sit on or above the diagonal, the 264 predictions in the very top bucket were all correct, and the middle of the range (55–80%) falls *below* the diagonal: confident, but often wrong. Those mid-range misses are largely the weak and neutral examples.
+Each dot is a 5% bucket, labeled with how many predictions landed in it. The top buckets (up to 100%) sit on or above the diagonal, the 264 predictions in the very top bucket were all correct, and the middle of the range (55–80%) falls *below* the diagonal: confident, but often wrong. Of the 358 predictions in the 55–80% range, 357 come from the weak and neutral tiers, and they account for all 181 errors there.
 
 A **reliability diagram** groups predictions by predicted probability and plots the fraction that were actually positive. A calibrated model sits on the diagonal. Jev's raw probabilities don't:
 
