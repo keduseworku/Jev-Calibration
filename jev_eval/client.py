@@ -1,13 +1,13 @@
-"""Cached, resumable Jev runner over arbitrary (state, questions) items, plus an offline mock.
+"""Cached Jev runner over arbitrary (state, questions) items, plus an offline mock.
 
-Cache records are keyed by (item id, question fingerprint). Re-running with changed wording or a
-different model re-queries instead of reusing stale answers. Mirrors jev_calibration.jev_client
-but takes any state shape and any question set.
+Records are keyed by (hash of the state, fingerprint of questions + model id), so a changed
+document, word, option or model re-queries. The served model must equal the requested one or the
+run stops. Mirrors jev_calibration.jev_client.run, which is fixed to that study's rows and questions.
 """
 import asyncio
+import hashlib
 import json
 import time
-from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,79 +16,69 @@ import numpy as np
 from .fingerprint import plain, question_fingerprint
 
 
-def serialize_answers(answers: Mapping) -> dict:
-    return {name: plain(a) for name, a in answers.items()}
+def real_client():
+    from dotenv import load_dotenv
+    from typesafe_sdk import AsyncTypeSafeClient, RetryPolicy
+    load_dotenv()
+    return AsyncTypeSafeClient(retry=RetryPolicy(max_retries=6, backoff_max=30.0))
 
 
-class JevRunner:
-    """items: [{"id": str, "state": <JSON>}]. questions: one mapping shared by all items."""
+def state_key(state) -> str:
+    return hashlib.sha1(json.dumps(state, sort_keys=True).encode()).hexdigest()[:16]
 
-    def __init__(self, cache_path: str | Path, model: str | None = None, concurrency: int = 8,
-                 client_factory: Callable | None = None):
-        self.cache_path = Path(cache_path)
-        self.model = model
-        self.concurrency = concurrency
-        self.client_factory = client_factory or self._real_client
 
-    @staticmethod
-    def _real_client():
-        from dotenv import load_dotenv
-        from typesafe_sdk import AsyncTypeSafeClient, RetryPolicy
-        load_dotenv()
-        return AsyncTypeSafeClient(retry=RetryPolicy(max_retries=6, backoff_max=30.0))
+def run(items, questions, model, cache_path=None, client_factory=real_client, concurrency=8) -> dict[str, dict]:
+    """items: [{"id", "state"}]. Returns item id -> record for every item that answered.
+    cache_path=None means no persistence (mock runs)."""
+    fp = question_fingerprint(questions, model)
+    cache = Path(cache_path) if cache_path else None
+    have, bad = {}, 0
+    if cache:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        for line in cache.read_text().splitlines() if cache.exists() else []:
+            try:
+                r = json.loads(line)
+                if r["fp"] == fp:
+                    have[r["key"]] = r
+            except (ValueError, KeyError):  # truncated write or a record from an older cache format
+                bad += 1
+        if bad:
+            print(f"skipped {bad} unreadable line(s) in {cache}; those items are re-queried")
+    keys = {it["id"]: state_key(it["state"]) for it in items}
+    todo = list({keys[it["id"]]: it for it in items if keys[it["id"]] not in have}.values())  # one call per distinct state
 
-    def load_cache(self, fp: str) -> dict[str, dict]:
-        out = {}
-        if self.cache_path.exists():
-            for line in self.cache_path.read_text().splitlines():
-                if line.strip():
-                    r = json.loads(line)
-                    if r["fp"] == fp:
-                        out[r["id"]] = r
-        return out
-
-    async def run_async(self, items: list[dict], questions: Mapping, limit: int | None = None) -> dict[str, dict]:
-        fp = question_fingerprint(questions, self.model)
-        have = self.load_cache(fp)
-        todo = [it for it in items if it["id"] not in have][:limit]
-        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-        sem, lock = asyncio.Semaphore(self.concurrency), asyncio.Lock()
-
-        async with self.client_factory() as client:
+    async def go():
+        sem, lock = asyncio.Semaphore(concurrency), asyncio.Lock()
+        async with client_factory() as client:
             async def one(it):
                 async with sem:
                     t0 = time.perf_counter()
                     try:
-                        resp = await client.system_one(state=it["state"], questions=questions, model=self.model)
-                    except Exception as e:  # failed ids are retried on the next run
+                        resp = await client.system_one(state=it["state"], questions=questions, model=model)
+                    except Exception as e:  # failed items are retried on the next run
                         print(f"FAILED {it['id']}: {type(e).__name__}: {e}")
                         return
-                    usage = resp.usage
-                    rec = {"id": it["id"], "fp": fp, "model": getattr(resp, "model", self.model),
-                           "latency_s": time.perf_counter() - t0,
-                           "usage": plain(usage) if usage is not None else None,
-                           "answers": serialize_answers(resp.answers)}
+                if resp.model != model:
+                    raise RuntimeError(f"asked for model {model!r}, server answered with {resp.model!r}; use the exact id")
+                rec = {"key": keys[it["id"]], "id": it["id"], "fp": fp, "model": resp.model,
+                       "latency_s": time.perf_counter() - t0, "usage": plain(resp.usage) if resp.usage else None,
+                       "answers": {k: plain(a) for k, a in resp.answers.items()}}
                 async with lock:
-                    with self.cache_path.open("a") as f:
-                        f.write(json.dumps(rec) + "\n")
-                    have[it["id"]] = rec
-
+                    if cache:
+                        with cache.open("a") as f:
+                            f.write(json.dumps(rec) + "\n")
+                    have[rec["key"]] = rec
             await asyncio.gather(*(one(it) for it in todo))
-        return {it["id"]: have[it["id"]] for it in items if it["id"] in have}
 
-    def run(self, items, questions, limit=None) -> dict[str, dict]:
-        return asyncio.run(self.run_async(items, questions, limit=limit))
+    asyncio.run(go())
+    return {it["id"]: have[keys[it["id"]]] for it in items if keys[it["id"]] in have}
 
 
 class MockJev:
-    """Offline stand-in for AsyncTypeSafeClient.
+    """Offline stand-in for AsyncTypeSafeClient. answer_fn(state, questions) -> serialized answers."""
 
-    answer_fn(state, questions) -> serialized answers. Use noisy_oracle(...) to build one from item
-    truth so tests and dry runs exercise the whole pipeline without an API key.
-    """
-
-    def __init__(self, answer_fn: Callable[[dict, Mapping], dict], model: str = "mock-jev"):
-        self.answer_fn, self.model = answer_fn, model
+    def __init__(self, answer_fn):
+        self.answer_fn = answer_fn
 
     async def __aenter__(self):
         return self
@@ -96,53 +86,38 @@ class MockJev:
     async def __aexit__(self, *exc):
         return False
 
-    async def system_one(self, state, questions, model=None, **_):
-        return SimpleNamespace(answers=self.answer_fn(state, questions), model=model or self.model, usage=None)
+    async def system_one(self, state, questions, model=None):
+        return SimpleNamespace(answers=self.answer_fn(state, questions), model=model, usage=None)
 
 
-def noisy_oracle(truth_by_state: Callable[[dict], dict], noise: float = 0.25, seed: int = 0,
-                 miss_rate: float = 0.1) -> Callable:
-    """Build a MockJev answer_fn that knows the truth but reports it with noise and occasional misses.
+def truth_by_state(items):
+    """state -> truth for mocks, which must not see item ids."""
+    table = {state_key(it["state"]): it["truth"] for it in items}
+    return lambda state: table[state_key(state)]
 
-    truth_by_state(state) -> {question_name: truth}; truth is bool (noul), option key (choice), or
-    level index (score). Probabilities are rounded to 2 decimals like the real model.
-    """
+
+def noisy_oracle(lookup, noise=0.25, miss_rate=0.1, seed=0):
+    """Mock answers that know the truth but report it with noise and occasional misses, rounded to
+    2 decimals like the real model so ties occur. Noul and Choice only."""
     rng = np.random.default_rng(seed)
 
-    def _peaked(keys, true_key):
-        n = len(keys)
-        base = rng.dirichlet(np.ones(n) * 0.3)
-        if rng.random() >= miss_rate:  # usually put most mass on the truth
-            base = base * noise
-            base[keys.index(true_key)] += 1 - noise
-        p = np.round(base / base.sum(), 2)
-        p[np.argmax(p)] += round(1 - p.sum(), 2)
-        return {k: float(v) for k, v in zip(keys, p)}
-
-    def answer_fn(state, questions):
-        truth = truth_by_state(state)
-        out = {}
+    def answer(state, questions):
+        truth, out = lookup(state), {}
         for name, q in questions.items():
-            q = plain(q)
-            t = truth.get(name)
+            q, t = plain(q), truth[name]
+            if q["type"] == "score":
+                raise NotImplementedError("noisy_oracle mocks Noul and Choice only")
+            p_true = 1 - noise * rng.random()
+            if rng.random() < miss_rate:
+                p_true = 1 - p_true
             if q["type"] == "noul":
-                p = (1 - noise * rng.random()) if t else noise * rng.random()
-                if rng.random() < miss_rate:
-                    p = 1 - p
-                out[name] = {"type": "noul", "noul": round(float(p), 2)}
-            elif q["type"] == "choice":
-                keys = list(q["criteria"].keys())
-                probs = _peaked(keys, t if t in keys else keys[-1])
+                out[name] = {"type": "noul", "noul": round(float(p_true if t else 1 - p_true), 2)}
+            else:
+                others = [k for k in q["criteria"] if k != t]
+                spread = rng.dirichlet(np.ones(len(others))) * (1 - p_true)
+                probs = {t: round(float(p_true), 2), **{k: round(float(v), 2) for k, v in zip(others, spread)}}
                 top = max(probs, key=probs.get)
-                out[name] = {"type": "choice", "choice": top, "probabilities": probs,
-                             "confidence": round(2 * probs[top] - 1, 2)}
-            elif q["type"] == "score":
-                levels = [str(i) for i in range(len(q["criteria"]))]
-                probs = _peaked(levels, str(t if t is not None else 0))
-                score = sum(int(k) * v for k, v in probs.items())
-                out[name] = {"type": "score", "score": round(score, 2), "probabilities": probs,
-                             "legend": {str(i): c for i, c in enumerate(q["criteria"])},
-                             "confidence": round(max(probs.values()), 2)}
+                out[name] = {"type": "choice", "choice": top, "probabilities": probs, "confidence": 2 * probs[top] - 1}
         return out
 
-    return answer_fn
+    return answer

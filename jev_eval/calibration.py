@@ -1,112 +1,73 @@
-"""Per-question calibration bound to a question fingerprint.
+"""Per-question calibration: calibrator and threshold from the fit split, every reported number
+from the holdout.
 
-Rule from the anth.us study: rank-based uses need no labels; any threshold (accept / reject /
-block / auto-approve) must be set in calibrated-probability terms, per question, per primitive,
-per model version, on a few hundred labeled examples with a holdout.
+Rank-based uses need no labels; any accept / reject / block threshold is set in calibrated
+probability, per question, per primitive, per model id. Calibrators are never persisted: they are
+recomputed each run from answers cached under the question fingerprint.
 """
-import json
-from dataclasses import dataclass, field
-from pathlib import Path
-
 import numpy as np
 from sklearn.metrics import roc_auc_score
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit, train_test_split
 
 from jev_calibration import metrics
-from jev_calibration.calibrate import CALIBRATORS, Isotonic, PlattLogit
+from jev_calibration.calibrate import Isotonic, PlattLogit
 
 
 def raw_score(answer: dict) -> float:
-    """Top-label probability for any primitive: the quantity to calibrate against correctness."""
-    t = answer["type"]
-    if t == "noul":
-        p = answer["noul"]
-        return max(p, 1 - p)
+    """Top-label probability: the quantity calibrated against correctness."""
+    if answer["type"] == "noul":
+        return max(answer["noul"], 1 - answer["noul"])
     return max(answer["probabilities"].values())
 
 
 def predicted(answer: dict):
-    t = answer["type"]
-    if t == "noul":
+    if answer["type"] == "noul":
         return answer["noul"] >= 0.5
-    if t == "choice":
-        return answer["choice"]
-    return max(answer["probabilities"], key=answer["probabilities"].get)
+    if answer["type"] == "score":
+        return max(answer["probabilities"], key=answer["probabilities"].get)  # argmax level key, never the mean
+    return answer["choice"]
 
 
-def auroc(conf, correct) -> float | None:
+def auroc(conf, correct):
     correct = np.asarray(correct, int)
-    if correct.min() == correct.max():
+    if len(correct) == 0 or correct.min() == correct.max():
         return None
     return float(roc_auc_score(correct, np.asarray(conf, float)))
 
 
-@dataclass
-class CalibratedQuestion:
-    name: str
-    fingerprint: str
-    method: str
-    x: list = field(default_factory=list)  # isotonic knots (or platt params in x=[a,b])
-    y: list = field(default_factory=list)
-    n_fit: int = 0
-    report: dict = field(default_factory=dict)
-
-    def predict(self, raw):
-        raw = np.asarray(raw, float)
-        if self.method == "isotonic":
-            return np.interp(raw, self.x, self.y)
-        a, b = self.x
-        from jev_calibration.calibrate import logit
-        return 1 / (1 + np.exp(-(a * logit(raw) + b)))
-
-    def check(self, fingerprint: str):
-        if fingerprint != self.fingerprint:
-            raise ValueError(f"calibrator for {self.name} was fit on fingerprint {self.fingerprint}, "
-                             f"got {fingerprint}: wording/options/model changed, refit before thresholding")
-
-    def save(self, path):
-        Path(path).write_text(json.dumps(self.__dict__, indent=1))
-
-    @classmethod
-    def load(cls, path):
-        return cls(**json.loads(Path(path).read_text()))
+def threshold_for_accuracy(conf, correct, target: float) -> dict:
+    """Lowest t such that accuracy among conf >= t reaches target. Sweeps the distinct values with
+    upstream coverage_curve, so ties (isotonic steps, 2-decimal rounding) count as applied."""
+    rows = [r for r in metrics.coverage_curve(conf, correct, np.unique(conf))
+            if r["accuracy"] is not None and r["accuracy"] >= target]
+    return rows[0] if rows else {"threshold": None, "coverage": None, "accuracy": None}
 
 
-def calibrate_question(raw, correct, name: str, fingerprint: str, method: str = "isotonic",
-                       holdout: float = 0.4, seed: int = 0, min_n: int = 50):
-    """Fit on (1-holdout) of the data, report raw / platt / isotonic on the holdout, return the bundle."""
+def calibrate_question(raw, correct, target_acc: float = 0.95, holdout: float = 0.4, seed: int = 0,
+                       min_n: int = 50, prereg_n: int = 200, groups=None):
+    """60/40 split, stratified, or by group when `groups` is given (items sharing a group stay on one
+    side). Isotonic and the accuracy-targeted threshold come from the fit split; ECE, AUROC and the
+    delivered coverage / accuracy at that threshold come from the holdout.
+    Returns (isotonic, report, holdout_indices)."""
     raw, correct = np.asarray(raw, float), np.asarray(correct, int)
     if len(raw) < min_n:
-        raise ValueError(f"{name}: {len(raw)} labeled examples < {min_n}; below ~50 a calibrator is noise "
-                         f"(anth.us calibration-size result)")
-    idx = np.arange(len(raw))
-    strat = correct if 0 < correct.mean() < 1 else None
-    fit_i, ho_i = train_test_split(idx, test_size=holdout, random_state=seed, stratify=strat)
-    report = {"n_fit": int(len(fit_i)), "n_holdout": int(len(ho_i)),
-              "auroc_holdout": auroc(raw[ho_i], correct[ho_i]),
-              "raw": metrics.summary(raw[ho_i], correct[ho_i])}
-    fitted = {}
-    for cname in ("platt_logit", "isotonic"):
-        c = CALIBRATORS[cname]().fit(raw[fit_i], correct[fit_i])
-        fitted[cname] = c
-        report[cname] = metrics.summary(c.predict(raw[ho_i]), correct[ho_i])
-    c = fitted[method]
-    if method == "isotonic":
-        x, y = [float(v) for v in c.iso.X_thresholds_], [float(v) for v in c.iso.y_thresholds_]
+        raise ValueError(f"{len(raw)} labeled examples < {min_n}: below ~50 a calibrator is noise")
+    if groups is not None:
+        fit, ho = next(GroupShuffleSplit(n_splits=1, test_size=holdout, random_state=seed).split(raw, groups=groups))
     else:
-        x, y = [c.params["a"], c.params["b"]], []
-    return CalibratedQuestion(name=name, fingerprint=fingerprint, method=method, x=x, y=y,
-                              n_fit=int(len(fit_i)), report=report)
-
-
-def threshold_for_accuracy(calibrated_conf, correct, target: float = 0.95) -> dict:
-    """Lowest calibrated-confidence threshold whose auto-accepted set stays at or above target accuracy."""
-    conf, correct = np.asarray(calibrated_conf, float), np.asarray(correct, float)
-    order = np.argsort(-conf)
-    cum_acc = np.cumsum(correct[order]) / np.arange(1, len(order) + 1)
-    ok = np.where(cum_acc >= target)[0]
-    if len(ok) == 0:
-        return {"target": target, "threshold": None, "coverage": 0.0, "accuracy": None}
-    k = int(ok.max())
-    return {"target": target, "threshold": float(conf[order][k]), "coverage": float((k + 1) / len(conf)),
-            "accuracy": float(cum_acc[k])}
+        both = min(correct.sum(), len(correct) - correct.sum()) >= 2
+        fit, ho = train_test_split(np.arange(len(raw)), test_size=holdout, random_state=seed, stratify=correct if both else None)
+    iso = Isotonic().fit(raw[fit], correct[fit])
+    cal_fit, cal_ho = iso.predict(raw[fit]), iso.predict(raw[ho])
+    single_class = correct[fit].min() == correct[fit].max()
+    report = {"n_fit": int(len(fit)), "n_holdout": int(len(ho)), "below_prereg_floor": len(raw) < prereg_n,
+              "single_class_fit": bool(single_class), "auroc_holdout": auroc(raw[ho], correct[ho]),
+              "raw": metrics.summary(raw[ho], correct[ho]), "isotonic": metrics.summary(cal_ho, correct[ho])}
+    chosen = {"threshold": None} if single_class else threshold_for_accuracy(cal_fit, correct[fit], target_acc)
+    t = chosen["threshold"]
+    delivered = metrics.coverage_curve(cal_ho, correct[ho], [t])[0] if t is not None else {"coverage": None, "accuracy": None}
+    report["threshold"] = {"target": target_acc, "threshold": t, "chosen_on": "fit",
+                           "holdout_coverage": delivered["coverage"], "holdout_accuracy": delivered["accuracy"]}
+    if not single_class:
+        report["platt"] = metrics.summary(PlattLogit().fit(raw[fit], correct[fit]).predict(raw[ho]), correct[ho])
+    return iso, report, ho

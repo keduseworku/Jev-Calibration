@@ -5,4 +5,4 @@ __pycache__/
 .pytest_cache/
 data/variants_run.log
 data/eval_*.jsonl
-data/mock_*.jsonl
+results/eval/

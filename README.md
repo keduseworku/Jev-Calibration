@@ -1,3 +1,8 @@
+> **This fork** adds `jev_eval/`, an evaluation scaffold built on this study's calibrators: bracket
+> evals (floor / Jev / oracle), holdout-only calibrated thresholds, a paraphrase panel, counterfactual
+> sampling and four demo task adapters. See [`evals/README.md`](evals/README.md). The study below, its
+> code, data and results are unchanged and belong to Anthus.
+
 # Getting Calibrated Confidence from Jev
 
 > **TL;DR**: Jev returns a probability with every answer, and how strongly it favors an answer is its *confidence*. That confidence is only useful if it matches reality: when Jev is 90% sure, it should be right about 90% of the time. On 8,801 labeled sentiment examples, Jev's raw probabilities didn't do that (expected calibration error 0.117). A two-parameter Platt curve cut that to 0.052. **Isotonic regression cut it to 0.008**, because the miscalibration wasn't sigmoid-shaped. It beat Platt even with only 20–100 calibration examples, and once calibrated, the way you phrase the question matters much less than you'd expect.
