@@ -17,7 +17,7 @@ dependencies = [
 dev = ["pytest>=8"]
 
 [tool.setuptools]
-packages = ["jev_calibration"]
+packages = ["jev_calibration", "jev_eval", "jev_eval.tasks"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
